@@ -47,7 +47,7 @@ OPTIONS         = {
                     'delimiter_color' : ('cyan'      , 'Color used for the delimiters.'),
                     'label_color'     : ('red'       , 'Color used for labels.'),
                   }
-DEBUG = True
+DEBUG = False
 label_marker = '<mislabeled_marker:'
 label_marker_re = r'(%s)([^>]*)(>)' % label_marker
 
@@ -76,7 +76,7 @@ def debug(str):
   if DEBUG:
     weechat.prnt("", '%s: %s' % (SCRIPT_NAME, str))
 
-def update_mislabeled_items(items):
+def update_items(items):
   global mislabeled_items
   mislabeled_items = []
   for item in items.split():
@@ -93,7 +93,7 @@ def toggle_refresh(pointer, name, value):
   option = name[len('plugins.var.python.' + SCRIPT_NAME + '.'):]        # get optionname
   OPTIONS[option] = value                                               # save new value
   if option == 'items':
-    update_mislabeled_items(value)
+    update_items(value)
   return weechat.WEECHAT_RC_OK
 
 def mislabeled_cb(data, modifier, modifier_data, string):
@@ -131,7 +131,7 @@ def mislabeled_cb(data, modifier, modifier_data, string):
   # Nothing matches, so return the original, unmodified, string
   return string
 
-def mislabeled_colorize_cb(data, modifier, modifier_data, string):
+def colorize_cb(data, modifier, modifier_data, string):
   matches = re.search(r'<mislabeled_marker:([^>]*)>', string)
   if matches:
     del_color = weechat.config_get_plugin('delimiter_color')
@@ -141,19 +141,13 @@ def mislabeled_colorize_cb(data, modifier, modifier_data, string):
     string = re.sub(r'<mislabeled_marker:[^>]*>', '%s[%s%s%s]%s ' % (weechat.color("cyan"), weechat.color("red"), labels, weechat.color("cyan"), weechat.color("chat")), string)
   return string
 
-def mislabeled_command_cb(data, buffer, args):
+def command_cb(data, buffer, args):
   debug('adding "%s"' % args)
   items = weechat.config_get_plugin('items')
   new_items = '%s %s' % (items, args)
   debug('new_items: %s' % new_items)
   weechat.config_set_plugin('items', new_items)
   return weechat.WEECHAT_RC_OK
-
-def echo_out(data, modifier, modifier_data, string):
-  debug('out: %s' % string)
-  if re.search(r'\x01ACTION', string):
-    debug('out: found')
-  return string
 
 # ================================[ main ]===============================
 if __name__ == "__main__":
@@ -169,10 +163,9 @@ if __name__ == "__main__":
       weechat.prnt("","%s%s %s" % (weechat.prefix("error"),SCRIPT_NAME,": needs version 0.3.6 or higher"))
       weechat.command("","/wait 1ms /python unload %s" % SCRIPT_NAME)
 
-    hook = weechat.hook_modifier("irc_out_privmsg", "echo_out", "")
     hook = weechat.hook_modifier("irc_in_privmsg", "mislabeled_cb", "")
-    hook = weechat.hook_modifier("weechat_print", "mislabeled_colorize_cb", "")
+    hook = weechat.hook_modifier("weechat_print", "colorize_cb", "")
     hook = weechat.hook_command("mislabeled", "Add an item to the mislabeled list.",
         "pattern[:channel1[,channel2[,...]]]",
         "A pattern with an optional comma delimited list of channel names",
-        "%(nick)", "mislabeled_command_cb", "")
+        "%(nick)", "command_cb", "")
