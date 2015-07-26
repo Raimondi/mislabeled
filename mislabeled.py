@@ -41,7 +41,7 @@ SCRIPT_LICENSE  = "GPL"
 SCRIPT_DESC     = "You can put labels on anyone you want."
 
 OPTIONS         = {
-                    'default_label'   : ('mislabeled', 'Text used to mark messages as mislabeled.'),
+                    'default_label'   : ('mislabeled', 'Default label.'),
                     'items'           : (''          , 'Space-separated regular expressions that will be matched against the nick!ident@host.item. Any user matching will get their message  marked as mislabeled. Can also include a comma-separated list of channels followed by a list of labels for every regular expression separated from each other and the regexp by a colon. Prefix regexp with (?i) if you want it to be case insensitive. Example: "@\S+\.aol\.com$:#comcast,#AT&T:trust (?i)!root@\S+ foobar::avoid" would label messages in channels #comcast and #AT&T from users whose hosts end in *.aol.com with "trust", all users who have any case variation of root as ident regardless of channel would be labeled with the default label; and any user with "foobar" on its nick or host in any channel with the label "avoid".'),
                     'separator'       : ('|'         , 'Character used to separate labels.'),
                     'delimiter_color' : ('cyan'      , 'Color used for the delimiters.'),
@@ -121,6 +121,7 @@ def mislabeled_cb(data, modifier, modifier_data, string):
       [cur_labels.append(label) for label in labels if label not in cur_labels]
     if cur_labels:
       # we have some tags to use
+      debug("  current labels: %s" % ', '.join(cur_labels))
       string = re.sub(label_marker_re, r'\1\2%s\3' % ','.join(cur_labels), new_string)
   return string
 
@@ -132,7 +133,7 @@ def colorize_cb(data, modifier, modifier_data, string):
     sep = delim_c + weechat.config_get_plugin('separator') + lbl_c
     labels = sep.join(matches.group(1).split(','))
     string = re.sub(r'<mislabeled_marker:[^>]*>', '%s[%s%s%s]%s ' % \
-        (delim_c, lbl_c, labels, delim_c, weechat.color("chat")), string)
+        (delim_c, lbl_c, labels, delim_c, weechat.color("reset")), string)
   return string
 
 def command_cb(data, buffer, args):
