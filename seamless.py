@@ -37,27 +37,29 @@ SCRIPT_NAME     = "seamless"
 SCRIPT_AUTHOR   = 'Israel Chauca F. <israelchauca++seamless@gmail.com>'
 SCRIPT_VERSION  = "0.1"
 SCRIPT_LICENSE  = "GPL"
-SCRIPT_DESC     = "Make it like relay/bridge bots are not even there. Support for ijchain, gitterircbot."
+SCRIPT_DESC     = "Make it like relay/bridge bots are not even there. " \
+    + "Support for ijchain, gitterircbot."
 
 OPTIONS         = {
     'items'   : ('',
-      'bot1:server1,#chan1,#chan2:server2,* bot2:server1,#chan1,#chan2:server2,#chan3'),
-    'aliases' : ('', 'bot1:regex_for_alternate_nicks [bot2:regex_for_alternate_nicks]'),
+      'bot1:server1,#chan1,#chan2:server2,* bot2:server1,#chan1,#chan2'),
+    'aliases' : ('', 'bot1:regex_for_aliases [bot2:regex_for_aliases]'),
                   }
 DEBUG = False
-label_marker = '<seamless_marker:'
-label_marker_re = r'(%s)([^>]*)(>)' % label_marker
+
+_aliases = {}
+_items = []
 
 # ===================[ weechat options & description ]===================
 def init_options():
   for option,value in OPTIONS.items():
     if not weechat.config_is_set_plugin(option):
       weechat.config_set_plugin(option, value[0])
-      toggle_refresh(None, 'plugins.var.python.' + SCRIPT_NAME + '.' + option, \
-          value[0])
+      sync_with_options(None, 'plugins.var.python.' + SCRIPT_NAME \
+          + '.' + option, value[0])
     else:
-      toggle_refresh(None, 'plugins.var.python.' + SCRIPT_NAME + '.' + option, \
-          weechat.config_get_plugin(option))
+      sync_with_options(None, 'plugins.var.python.' + SCRIPT_NAME + '.' \
+          + option, weechat.config_get_plugin(option))
     weechat.config_set_desc_plugin(option, \
         '%s (default: "%s")' % (value[1], value[0]))
 
@@ -65,30 +67,7 @@ def debug(str):
   if DEBUG:
     weechat.prnt("", '%s: %s' % (SCRIPT_NAME, str))
 
-def update_aliases(aliases):
-  global seamless_aliases
-  alist = re.split(r'[: ]+', aliases)
-  seamless_aliases = dict(zip(alist[0::1], alist[1::2]))
-
-def update_items(items):
-  '''
-  [{'bot': {bot},
-    'servers': [[server, [channels]],...]
-    },...]
-  '''
-  global seamless_items
-  seamless_items = []
-  for text in items.split():
-    bot_name, text = text.split(':', 1)
-    if not bot_name in bots:
-      continue
-    entry = {'bot': bots[bot_name]}
-    servers = [[x.split(',', 1)[0], x.split(',')[1:]] for x in text.split(':')]
-    entry['servers'] = servers
-    entry['all_channels'] = len(servers) == 1 and servers[0] == '*'
-    seamless_items.append(entry)
-
-def toggle_refresh(pointer, name, value):
+def sync_with_options(pointer, name, value):
   global OPTIONS
   # get optionname
   option = name[len('plugins.var.python.' + SCRIPT_NAME + '.'):]
@@ -100,100 +79,151 @@ def toggle_refresh(pointer, name, value):
     update_items(value)
   return weechat.WEECHAT_RC_OK
 
+def update_aliases(aliases):
+  '''
+  "bot_name1:alias1,alias2 bot_name2:alias1,alias2"
+  {bot_name1: aliases_regex, bot_name2: aliases_regex}
+  '''
+  global _aliases
+  alist = aliases.split()
+  alist = [i.split(':') for i in alist]
+  debug('alist: %s' % alist)
+  #_aliases = dict(zip(alist[0::1], alist[1::2]))
+  #_aliases = {k: v for k,v in alist}
+  # build regex from list of aliases.
+  #_aliases = {k: re.compile("^" + '|'.join(v.split(','))) for k,v in _aliases.items()}
+  _aliases = {k: (r'^(%s)' % '|'.join(v.split(','))) for k,v in alist}
+  debug('alisases: %s' % _aliases)
+
+def update_items(items):
+  '''
+  [{'bot': {bot},
+    'servers': [[server, [channels]],...]
+    },...]
+  '''
+  global _items
+  _items = []
+  for text in items.split():
+    bot_name, text = text.split(':', 1)
+    if not bot_name in bots:
+      continue
+    entry = {'bot': bots[bot_name]}
+    servers = [[x.split(',', 1)[0], x.split(',')[1:]] for x in text.split(':')]
+    entry['servers'] = servers
+    _items.append(entry)
+    debug('%s' % _items)
+
+# ===========================[ Set upt bots ]============================
+# Supported relay bots:
+# - ijchain
+# - gitterircbot
+
+def re_extract(regex, string):
+  matches = re.match(regex, string)
+  if matches:
+    return matches.groups()
+  else:
+    return []
+
 bots = {}
 
 # ijchain
 robot = {}
 robot['name'] = 'ijchain'
 robot['nick'] = r'^ijchain\d*$'
-robot['act_split_text'] = lambda x: re.match(r'^(\S+)\s(.*)', x).groups()
-robot['act_join'] = r'^has become available$'
-robot['act_quit'] = r'^has left$'
-robot['priv_split_text'] = lambda x: re.match(r'^<([^> ]+)>\s(.*)', x).groups()
-bots['ijchain'] = robot
+robot['action_extract_parts'] = lambda x: re_extract(r'^(\S+)\s(.*)', x)
+robot['action_join'] = r'^has become available$'
+robot['action_part'] = r'^has left$'
+robot['privmsg_extract_parts'] = lambda x: re_extract(r'^<([^> ]+)>\s(.*)', x)
+bots[robot['name']] = robot
 
 # gitterircbot https://github.com/finnp/gitter-irc-bot
 robot = {}
-robot['name'] = 'gitterbot'
+robot['name'] = 'gitterircbot'
 robot['nick'] = r'^gitterircbot[0-9_]*$'
-robot['priv_split_text'] = \
-    lambda x: re.match(r'^[(`]([^>` ]+)[)`]\s(.*)', x).groups()
-
-bots['gitterbot'] = robot
+robot['privmsg_extract_parts'] = \
+    lambda x: re_extract(r'^[(`]([^)` ]+)[)`]\s(.*)', x)
+bots[robot['name']] = robot
 
 def seamless_cb(data, modifier, modifier_data, string):
-  dict_in = { "message": string }
-  message_ht = weechat.info_get_hashtable("irc_message_parse", dict_in)
-  message_ht['server'] = modifier_data
-  channel = message_ht['channel']
-  for item in seamless_items:
+  info = weechat.info_get_hashtable("irc_message_parse", { "message": string })
+  info['server'] = modifier_data
+  channel = info['channel']
+  for item in _items:
     do_it = False
     bot = item['bot']
     for server, channels in item['servers']:
-      if server == modifier_data and \
-          (item['all_channels'] or channel in channels):
-        debug('Match with server "%s" and channel "%s"' % (server, channel))
+      if not server == modifier_data:
+        continue
+      if len(channels) == 1 and channels[0] == '*':
+        debug('matches all channels in server %s' % server)
+        do_it = True
+        break
+      if channel in channels:
+        debug('matches channel %s in server %s' % (channel, server))
         do_it = True
         break
     if not do_it:
       continue
-    nick = message_ht['nick']
-    nick_pat = re.compile(seamless_aliases.get(item['bot']['name'], '^\x00$'))
-    nick_matched = re.match(nick_pat, nick)
-    if re.match(bot['nick'], nick) or re.match(nick_pat, nick):
-      return transform(string, message_ht, bot)
+    nick = info['nick']
+    alias_pat = _aliases.get(bot['name'], r'^\\x00$')
+    debug('nick: %s, nick pat: %s, alias_pat: %s' % \
+        (nick, bot['nick'], alias_pat))
+    if re.match(bot['nick'], nick):
+      debug('matches bot name: %s' % nick)
+      return reformat(string, info, bot)
+    if re.match(alias_pat, nick):
+      debug('matches bot alias: %s' % nick)
+      return reformat(string, info, bot)
   return string
 
-def transform(string, ht, bot):
+def reformat(string, info, bot):
   debug(string)
-  host = ht['host']
-  arguments = ht['arguments']
-  channel = ht['channel']
-  text = ht.get('text', arguments.split(' :', 1)[1])
+  host = info['host']
+  arguments = info['arguments']
+  channel = info['channel']
+  text = info.get('text', arguments.split(' :', 1)[1])
   buf_p = weechat.buffer_search('==', \
-      'irc.' + ht['server'] + '.' + ht['channel'])
+      'irc.' + info['server'] + '.' + info['channel'])
   if not buf_p:
     debug('no buffer for %s' % \
-        'irc.' + ht['server'] + '.' + ht['channel'])
+        'irc.' + info['server'] + '.' + info['channel'])
     return string
-  if re.match(r'^\x01.*\x01', text):
+  action = re.match(r'^\x01.*\x01', text)
+  if action:
     # CTCP
     debug('action: %s' % text)
     if not re.match(r'^\x01ACTION\b', text):
       # A CTCP other than ACTION, do nothing.
       return string
     text = re.sub(r'^\x01ACTION |\x01$', '', text)
-    rnick, rtext = bot['act_split_text'](text)
-    debug("nick: %s, text: %s" % (rnick, rtext))
-    if 'act_quit' in bot and re.match(bot['act_quit'], rtext):
-      string = ":%s!~%s@%s QUIT :%s" % \
-          (rnick, rnick, ht['nick'], rtext)
-    elif 'act_part' in bot and re.match(bot['act_part'], rtext):
-      string = ":%s!~%s@%s PART %s :%s" % \
-          (rnick, rnick, ht['nick'], channel, rtext)
-    elif 'act_join' in bot and re.match(bot['act_join'], rtext):
-      string = ":%s!~%s@%s JOIN %s" % \
-          (rnick, rnick, ht['nick'], channel)
-    else:
-      string = ":%s!~%s@%s PRIVMSG %s :\x01ACTION %s\x01" % \
-          (rnick, rnick, ht['nick'], channel, rtext)
+    prefix = 'action_'
   else:
     # Regular PRIVMSG
     debug('privmsg: %s' % text)
-    rnick, rtext = bot['priv_split_text'](text)
-    debug("nick: %s, text: %s" % (rnick, rtext))
-    if 'priv_quit' in bot and re.match(bot['priv_quit'], rtext):
-      string = ":%s!~%s@%s QUIT :%s" % \
-          (rnick, rnick, ht['nick'], rtext)
-    elif 'priv_part' in bot and re.match(bot['priv_part'], rtext):
-      string = ":%s!~%s@%s PART %s :%s" % \
-          (rnick, rnick, ht['nick'], channel, rtext)
-    elif 'priv_join' in bot and re.match(bot['priv_join'], rtext):
-      string = ":%s!~%s@%s JOIN %s" % \
-          (rnick, rnick, ht['nick'], channel)
+    prefix = 'privmsg_'
+  parts = bot[prefix + 'extract_parts'](text)
+  if not parts:
+    # could not extract relayed nick and text, so do nothing.
+    return string
+  rnick, rtext = parts
+  debug("nick: %s, text: %s" % (rnick, rtext))
+  if prefix + 'quit' in bot and re.match(bot[prefix + 'quit'], rtext):
+    string = ":%s!~%s@%s QUIT :%s" % \
+        (rnick, rnick, info['nick'], rtext)
+  elif prefix + 'part' in bot and re.match(bot[prefix + 'part'], rtext):
+    string = ":%s!~%s@%s PART %s :%s" % \
+        (rnick, rnick, info['nick'], channel, rtext)
+  elif prefix + 'join' in bot and re.match(bot[prefix + 'join'], rtext):
+    string = ":%s!~%s@%s JOIN %s" % \
+        (rnick, rnick, info['nick'], channel)
+  else:
+    if action:
+      string = ":%s!~%s@%s PRIVMSG %s :\x01ACTION %s\x01" % \
+          (rnick, rnick, info['nick'], channel, rtext)
     else:
       string = ":%s!~%s@%s PRIVMSG %s :%s" % \
-          (rnick, rnick, ht['nick'], channel, rtext)
+          (rnick, rnick, info['nick'], channel, rtext)
   debug('string: %s' % string)
   return string
 
@@ -208,7 +238,7 @@ if __name__ == "__main__":
       init_options()
       # create a hook for your options
       weechat.hook_config( \
-          'plugins.var.python.' + SCRIPT_NAME + '.*', 'toggle_refresh', '' )
+          'plugins.var.python.' + SCRIPT_NAME + '.*', 'sync_with_options', '' )
       hook = weechat.hook_modifier("irc_in_privmsg", "seamless_cb", "")
     else:
       weechat.prnt("","%s%s %s" % \
