@@ -41,14 +41,12 @@ SCRIPT_DESC     = "Make it like relay/bridge bots are not even there. " \
     + "Support for ijchain, gitterircbot."
 
 OPTIONS         = {
-    'items'   : ('',
-      'bot1:server1,#chan1,#chan2:server2,* bot2:server1,#chan1,#chan2'),
-    'aliases' : ('', 'bot1:regex_for_aliases [bot2:regex_for_aliases]'),
+    'nicks'   : ('', 'nick1 nick2:server1,server2'),
                   }
 DEBUG = False
 
-_aliases = {}
-_items = []
+_nicks = []
+_bots = []
 
 # ===================[ weechat options & description ]===================
 def init_options():
@@ -73,45 +71,27 @@ def sync_with_options(pointer, name, value):
   option = name[len('plugins.var.python.' + SCRIPT_NAME + '.'):]
   # save new value
   OPTIONS[option] = value
-  if option == 'aliases':
-    update_aliases(value)
-  if option == 'items':
+  if option == 'nicks':
     update_items(value)
   return weechat.WEECHAT_RC_OK
 
-def update_aliases(aliases):
-  '''
-  "bot_name1:alias1,alias2 bot_name2:alias1,alias2"
-  {bot_name1: aliases_regex, bot_name2: aliases_regex}
-  '''
-  global _aliases
-  alist = aliases.split()
-  alist = [i.split(':') for i in alist]
-  debug('alist: %s' % alist)
-  #_aliases = dict(zip(alist[0::1], alist[1::2]))
-  #_aliases = {k: v for k,v in alist}
-  # build regex from list of aliases.
-  #_aliases = {k: re.compile("^" + '|'.join(v.split(','))) for k,v in _aliases.items()}
-  _aliases = {k: (r'^(%s)' % '|'.join(v.split(','))) for k,v in alist}
-  debug('alisases: %s' % _aliases)
-
 def update_items(items):
   '''
-  [{'bot': {bot},
-    'servers': [[server, [channels]],...]
-    },...]
+  "nick1:server1,server2 ..."
+  [['nick1',
+    ['server1', 'server2',...],
+    ],...]
   '''
-  global _items
-  _items = []
+  global _nicks
+  _nicks = []
   for text in items.split():
-    bot_name, text = text.split(':', 1)
-    if not bot_name in bots:
-      continue
-    entry = {'bot': bots[bot_name]}
-    servers = [[x.split(',', 1)[0], x.split(',')[1:]] for x in text.split(':')]
-    entry['servers'] = servers
-    _items.append(entry)
-    debug('%s' % _items)
+    if ':' in text:
+      item = text.split(':', 1)
+      item[0] = item[0].split(',')
+    else:
+      item = [text,[]]
+    _nicks.append(item)
+    debug('%s' % _nicks)
 
 # ===========================[ Set upt bots ]============================
 # Supported relay bots:
@@ -125,8 +105,6 @@ def re_extract(regex, string):
   else:
     return []
 
-bots = {}
-
 # ijchain
 robot = {}
 robot['name'] = 'ijchain'
@@ -135,7 +113,7 @@ robot['action_extract_parts'] = lambda x: re_extract(r'^(\S+)\s(.*)', x)
 robot['action_join'] = r'^has become available$'
 robot['action_part'] = r'^has left$'
 robot['privmsg_extract_parts'] = lambda x: re_extract(r'^<([^> ]+)>\s(.*)', x)
-bots[robot['name']] = robot
+_bots.append(robot)
 
 # gitterircbot https://github.com/finnp/gitter-irc-bot
 robot = {}
@@ -143,38 +121,24 @@ robot['name'] = 'gitterircbot'
 robot['nick'] = r'^gitterircbot[0-9_]*$'
 robot['privmsg_extract_parts'] = \
     lambda x: re_extract(r'^[(`]([^)` ]+)[)`]\s(.*)', x)
-bots[robot['name']] = robot
+_bots.append(robot)
 
 def seamless_cb(data, modifier, modifier_data, string):
   info = weechat.info_get_hashtable("irc_message_parse", { "message": string })
   info['server'] = modifier_data
   channel = info['channel']
-  for item in _items:
-    do_it = False
-    bot = item['bot']
-    for server, channels in item['servers']:
-      if not server == modifier_data:
-        continue
-      if len(channels) == 1 and channels[0] == '*':
-        debug('matches all channels in server %s' % server)
-        do_it = True
-        break
-      if channel in channels:
-        debug('matches channel %s in server %s' % (channel, server))
-        do_it = True
-        break
-    if not do_it:
+  for nick,servers in _nicks:
+    if servers and not (info['server'] in servers):
       continue
-    nick = info['nick']
-    alias_pat = _aliases.get(bot['name'], r'^\\x00$')
-    debug('nick: %s, nick pat: %s, alias_pat: %s' % \
-        (nick, bot['nick'], alias_pat))
-    if re.match(bot['nick'], nick):
-      debug('matches bot name: %s' % nick)
-      return reformat(string, info, bot)
-    if re.match(alias_pat, nick):
-      debug('matches bot alias: %s' % nick)
-      return reformat(string, info, bot)
+    nick_re = (r'^%s' % re.escape(nick))
+    if not re.match(nick_re, info['nick']):
+      continue
+    debug('%s is a valid server.' % info['server'])
+    debug('%s matches %s' % (nick_re, nick))
+    for bot in _bots:
+      result = reformat(string, info, bot)
+      if result:
+        return result
   return string
 
 def reformat(string, info, bot):
@@ -190,6 +154,7 @@ def reformat(string, info, bot):
         'irc.' + info['server'] + '.' + info['channel'])
     return string
   action = re.match(r'^\x01.*\x01', text)
+  result = []
   if action:
     # CTCP
     debug('action: %s' % text)
@@ -205,27 +170,27 @@ def reformat(string, info, bot):
   parts = bot[prefix + 'extract_parts'](text)
   if not parts:
     # could not extract relayed nick and text, so do nothing.
-    return string
+    return result
   rnick, rtext = parts
   debug("nick: %s, text: %s" % (rnick, rtext))
   if prefix + 'quit' in bot and re.match(bot[prefix + 'quit'], rtext):
-    string = ":%s!~%s@%s QUIT :%s" % \
-        (rnick, rnick, info['nick'], rtext)
+    result.append(":%s!~%s@%s QUIT :%s" % \
+        (rnick, rnick, info['nick'], rtext))
   elif prefix + 'part' in bot and re.match(bot[prefix + 'part'], rtext):
-    string = ":%s!~%s@%s PART %s :%s" % \
-        (rnick, rnick, info['nick'], channel, rtext)
+    result.append(":%s!~%s@%s PART %s :%s" % \
+        (rnick, rnick, info['nick'], channel, rtext))
   elif prefix + 'join' in bot and re.match(bot[prefix + 'join'], rtext):
-    string = ":%s!~%s@%s JOIN %s" % \
-        (rnick, rnick, info['nick'], channel)
+    result.append(":%s!~%s@%s JOIN %s" % \
+        (rnick, rnick, info['nick'], channel))
   else:
     if action:
-      string = ":%s!~%s@%s PRIVMSG %s :\x01ACTION %s\x01" % \
-          (rnick, rnick, info['nick'], channel, rtext)
+      result.append(":%s!~%s@%s PRIVMSG %s :\x01ACTION %s\x01" % \
+          (rnick, rnick, info['nick'], channel, rtext))
     else:
-      string = ":%s!~%s@%s PRIVMSG %s :%s" % \
-          (rnick, rnick, info['nick'], channel, rtext)
-  debug('string: %s' % string)
-  return string
+      result.append(":%s!~%s@%s PRIVMSG %s :%s" % \
+          (rnick, rnick, info['nick'], channel, rtext))
+  debug('string: %s' % result)
+  return "\n".join(result)
 
 # ================================[ main ]===============================
 if __name__ == "__main__":
