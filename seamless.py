@@ -24,6 +24,9 @@
 #
 # Based on https://github.com/FiXato/weechat_scripts/blob/master/shutup.py
 
+# TODO FIXME NOTE
+# TODO:
+
 try:
   import weechat,re
   from random import choice
@@ -46,7 +49,7 @@ OPTIONS         = {
 DEBUG = False
 
 _nicks = []
-_bots = []
+_bots  = []
 
 # ===================[ weechat options & description ]===================
 def init_options():
@@ -72,10 +75,10 @@ def sync_with_options(pointer, name, value):
   # save new value
   OPTIONS[option] = value
   if option == 'nicks':
-    update_items(value)
+    update_nicks(value)
   return weechat.WEECHAT_RC_OK
 
-def update_items(items):
+def update_nicks(nicks):
   '''
   "nick1:server1,server2 ..."
   [['nick1',
@@ -84,7 +87,7 @@ def update_items(items):
   '''
   global _nicks
   _nicks = []
-  for text in items.split():
+  for text in nicks.split():
     if ':' in text:
       item = text.split(':', 1)
       item[0] = item[0].split(',')
@@ -123,10 +126,34 @@ robot['privmsg_extract_parts'] = \
     lambda x: re_extract(r'^[(`]([^)` ]+)[)`]\s(.*)', x)
 _bots.append(robot)
 
+def add_nick(info, bot, rnick, rtext, result):
+  buffer = weechat.buffer_search('==', 'irc.%s.%s' % (info['server'], info['channel']))
+  if buffer and not weechat.nicklist_search_nick(buffer, '', rnick):
+    result.append(":%s!~%s@%s.%s JOIN %s" % \
+        (rnick, rnick, info['nick'], SCRIPT_NAME, info['channel']))
+
 def seamless_cb(data, modifier, modifier_data, string):
   info = weechat.info_get_hashtable("irc_message_parse", { "message": string })
   info['server'] = modifier_data
   channel = info['channel']
+  buf_p = weechat.buffer_search('==', \
+      'irc.' + info['server'] + '.' + channel)
+  if not buf_p:
+    debug('no buffer for %s' % \
+        'irc.' + info['server'] + '.' + info['channel'])
+    return string
+  text = info.get('text', info['arguments'].split(' :', 1)[1])
+  action = re.match(r'^\x01.*\x01', text)
+  if action:
+    # CTCP
+    if not re.match(r'^\x01ACTION\b', text):
+      # A CTCP other than ACTION, do nothing.
+      return string
+    text = re.sub(r'^\x01ACTION |\x01$', '', text)
+    prefix = 'action_'
+  else:
+    # Regular PRIVMSG
+    prefix = 'privmsg_'
   for nick,servers in _nicks:
     if servers and not (info['server'] in servers):
       continue
@@ -135,38 +162,17 @@ def seamless_cb(data, modifier, modifier_data, string):
       continue
     debug('%s is a valid server.' % info['server'])
     debug('%s matches %s' % (nick_re, nick))
+    debug(string)
     for bot in _bots:
-      result = reformat(string, info, bot)
+      result = reformat(string, info, bot, prefix, text)
       if result:
         return result
   return string
 
-def reformat(string, info, bot):
-  debug(string)
-  host = info['host']
-  arguments = info['arguments']
+def reformat(string, info, bot, prefix, text):
   channel = info['channel']
-  text = info.get('text', arguments.split(' :', 1)[1])
-  buf_p = weechat.buffer_search('==', \
-      'irc.' + info['server'] + '.' + info['channel'])
-  if not buf_p:
-    debug('no buffer for %s' % \
-        'irc.' + info['server'] + '.' + info['channel'])
-    return string
-  action = re.match(r'^\x01.*\x01', text)
+  nick = info['nick']
   result = []
-  if action:
-    # CTCP
-    debug('action: %s' % text)
-    if not re.match(r'^\x01ACTION\b', text):
-      # A CTCP other than ACTION, do nothing.
-      return string
-    text = re.sub(r'^\x01ACTION |\x01$', '', text)
-    prefix = 'action_'
-  else:
-    # Regular PRIVMSG
-    debug('privmsg: %s' % text)
-    prefix = 'privmsg_'
   parts = bot[prefix + 'extract_parts'](text)
   if not parts:
     # could not extract relayed nick and text, so do nothing.
@@ -174,22 +180,27 @@ def reformat(string, info, bot):
   rnick, rtext = parts
   debug("nick: %s, text: %s" % (rnick, rtext))
   if prefix + 'quit' in bot and re.match(bot[prefix + 'quit'], rtext):
-    result.append(":%s!~%s@%s QUIT :%s" % \
-        (rnick, rnick, info['nick'], rtext))
+    # QUIT might remove the nick from unrelated rooms if it's duplicated
+    # result.append(":%s!~%s@%s.%s QUIT :%s" % \
+    #     (rnick, rnick, nick, SCRIPT_NAME, rtext))
+    result.append(":%s!~%s@%s.%s PART %s :%s" % \
+        (rnick, rnick, nick, SCRIPT_NAME, channel, rtext))
   elif prefix + 'part' in bot and re.match(bot[prefix + 'part'], rtext):
-    result.append(":%s!~%s@%s PART %s :%s" % \
-        (rnick, rnick, info['nick'], channel, rtext))
+    result.append(":%s!~%s@%s.%s PART %s :%s" % \
+        (rnick, rnick, nick, SCRIPT_NAME, channel, rtext))
   elif prefix + 'join' in bot and re.match(bot[prefix + 'join'], rtext):
-    result.append(":%s!~%s@%s JOIN %s" % \
-        (rnick, rnick, info['nick'], channel))
+    result.append(":%s!~%s@%s.%s JOIN %s" % \
+        (rnick, rnick, nick, SCRIPT_NAME, channel))
   else:
-    if action:
-      result.append(":%s!~%s@%s PRIVMSG %s :\x01ACTION %s\x01" % \
-          (rnick, rnick, info['nick'], channel, rtext))
+    if prefix == 'action_':
+      add_nick(info, bot, rnick, rtext, result)
+      result.append(":%s!~%s@%s.%s PRIVMSG %s :\x01ACTION %s\x01" % \
+          (rnick, rnick, nick, SCRIPT_NAME, channel, rtext))
     else:
-      result.append(":%s!~%s@%s PRIVMSG %s :%s" % \
-          (rnick, rnick, info['nick'], channel, rtext))
-  debug('string: %s' % result)
+      add_nick(info, bot, rnick, rtext, result)
+      result.append(":%s!~%s@%s.%s PRIVMSG %s :%s" % \
+          (rnick, rnick, nick, SCRIPT_NAME, channel, rtext))
+  debug('result: %s' % result)
   return "\n".join(result)
 
 # ================================[ main ]===============================
@@ -210,4 +221,3 @@ if __name__ == "__main__":
           (weechat.prefix("error"), SCRIPT_NAME, \
           ": needs version 0.3.6 or higher"))
       weechat.command("","/wait 1ms /python unload %s" % SCRIPT_NAME)
-

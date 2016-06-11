@@ -62,9 +62,9 @@ def init_options():
           weechat.config_get_plugin(option))
     weechat.config_set_desc_plugin(option, '%s (default: "%s")' % (value[1], value[0]))
 
-def debug(str):
-  if DEBUG:
-    weechat.prnt("", '%s: %s' % (SCRIPT_NAME, str))
+def debug(str, debug=DEBUG):
+  if debug:
+    weechat.prnt("", '%s%s: %s' % (weechat.color("yellow"), SCRIPT_NAME, str))
 
 def update_items(items):
   global mislabeled_items
@@ -104,7 +104,10 @@ def mislabeled_cb(data, modifier, modifier_data, string):
   # Add the marker and keep ACTION on its propper place.
   new_arguments = re.sub(r'^(%s :(\x01ACTION )?)' % channel, \
       r'\1%s' % label_marker + '>', arguments)
-  new_string = re.sub(r'%s$' % re.escape(arguments), new_arguments, string)
+  # strings can not end with a single backslash
+  new_arguments = re.sub(r'\\', r'\\\\', new_arguments)
+  args_pattern = r'%s$' % re.escape(arguments)
+  new_string = re.sub(args_pattern, new_arguments, string)
 
   for key, item_regexp, channels, labels in mislabeled_items:
     # If there is one or more channels listed for this item regexp, and none of
